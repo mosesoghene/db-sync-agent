@@ -1,77 +1,85 @@
 from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MISSED
-
-from core.schema import ensure_change_log_table
-from core.sync_engine import sync_changes
+from core.sync_engine import sync_changes_with_conflict_resolution
 from core.connector import connect_mysql
 
-import logging
 
-logger = logging.getLogger("sync_gui")
-
-
-def start_sync_scheduler(config, node_id):
+def start_sync_scheduler_with_conflict_resolution(config, node_id):
     scheduler = BackgroundScheduler()
 
     def run_sync_job():
-        try:
-            pairs = config.get("sync_pairs", [])
-            if not pairs:
-                logger.warning("⚠ No sync pairs configured.")
-                return
+        print("\n" + "=" * 60)
+        print("🔄 Starting scheduled sync job with CONFLICT RESOLUTION")
+        print("=" * 60)
 
-            for pair in pairs:
-                local_cfg = pair.get("local")
-                cloud_cfg = pair.get("cloud")
-                tables_spec = pair.get("tables", "all")
+        for pair in config["sync_pairs"]:
+            name = pair["name"]
+            tables = pair.get("tables", "all")
 
-                if not (local_cfg and cloud_cfg):
-                    logger.warning("⚠️ Skipping sync pair due to missing local/cloud config.")
-                    continue
+            # Get conflict resolution strategy from config (default: timestamp_wins)
+            resolution_strategy = pair.get("conflict_resolution", "timestamp_wins")
 
-                local_conn = connect_mysql(local_cfg)
-                cloud_conn = connect_mysql(cloud_cfg)
+            print(f"\n📋 Processing sync pair: {name}")
+            print(f"🛡️ Conflict resolution strategy: {resolution_strategy}")
 
-                # Dynamically get table list
-                with local_conn.cursor() as cur:
-                    cur.execute("SHOW TABLES")
-                    all_tables = [list(row.values())[0] for row in cur.fetchall()]
-                    tables = [t for t in all_tables if t != "change_log"] if tables_spec == "all" else tables_spec
+            local_conn = None
+            cloud_conn = None
 
-                # Ensure change_log tables and triggers exist
-                ensure_change_log_table(local_conn, local_cfg["db"], tables)
-                ensure_change_log_table(cloud_conn, cloud_cfg["db"], tables)
+            try:
+                # Connect to both databases
+                local_conn = connect_mysql(pair["local"])
+                cloud_conn = connect_mysql(pair["cloud"])
 
-                # Run sync in both directions
-                sync_changes(local_conn, cloud_conn, node_id, tables)
-                sync_changes(cloud_conn, local_conn, node_id, tables)
+                print(f"🔗 Connected to local: {pair['local']['db']}")
+                print(f"🔗 Connected to cloud: {pair['cloud']['db']}")
 
-                local_conn.close()
-                cloud_conn.close()
+                # Bi-directional sync with conflict resolution
+                sync_changes_with_conflict_resolution(
+                    local_conn, cloud_conn, name, tables, resolution_strategy
+                )
+                sync_changes_with_conflict_resolution(
+                    cloud_conn, local_conn, name, tables, resolution_strategy
+                )
 
-        except Exception as e:
-            logger.exception(f"❌ Sync job failed: {e}")
+            except Exception as e:
+                print(f"❌ Sync job failed: {e}")
+                import traceback
+                traceback.print_exc()
 
-    # Log scheduler-level warnings
-    def scheduler_listener(event):
-        if event.exception:
-            logger.error("🚨 Scheduled job raised an exception.")
-        elif event.code == EVENT_JOB_MISSED:
-            logger.warning("⚠️ Scheduled job missed its run window.")
+            finally:
+                # Always close connections
+                if local_conn:
+                    local_conn.close()
+                if cloud_conn:
+                    cloud_conn.close()
 
-    scheduler.add_listener(scheduler_listener, EVENT_JOB_ERROR | EVENT_JOB_MISSED)
+        print(f"\n✅ Sync job completed for all pairs")
 
-    # Run once immediately
+    # Run once at startup
+    print("🚀 Running initial sync with conflict resolution...")
     run_sync_job()
 
-    # Schedule future runs
+    # Schedule repeated runs
     interval = config.get("sync_interval_minutes", 10)
-    scheduler.add_job(
-        run_sync_job,
-        trigger="interval",
-        minutes=interval,
-        misfire_grace_time=60,  # allow job to run up to 1 minute late
-    )
+    scheduler.add_job(run_sync_job, "interval", minutes=interval)
 
-    logger.info(f"⏰ Sync job scheduled every {interval} minutes")
+    print(f"\n⏰ Scheduled to sync every {interval} minutes")
     scheduler.start()
+
+    return scheduler
+
+
+# Show available conflict resolution strategies
+def show_conflict_strategies():
+    strategies = {
+        'timestamp_wins': 'Most recent change wins (requires updated_at column)',
+        'source_wins': 'Source database always wins',
+        'target_wins': 'Target database always wins',
+        'merge_fields': 'Merge non-conflicting fields only',
+        'manual': 'Log conflicts for manual resolution (safest)'
+    }
+
+    print("\n🛡️ Available Conflict Resolution Strategies:")
+    print("=" * 50)
+    for strategy, description in strategies.items():
+        print(f"  {strategy:15} - {description}")
+    print("=" * 50)
