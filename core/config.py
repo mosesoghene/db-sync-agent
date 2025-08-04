@@ -2,7 +2,8 @@ import json
 import os
 import uuid
 
-CONFIG_PATH = "config.json"
+PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
+CONFIG_PATH = os.path.join(PROJECT_ROOT, "config.json")
 
 def load_config():
     if not os.path.exists(CONFIG_PATH):

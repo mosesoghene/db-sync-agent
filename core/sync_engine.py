@@ -1,24 +1,30 @@
 import json
 
 from core.schema import get_primary_key_column, get_table_list
+import logging
 
+logger = logging.getLogger("sync_gui")
 
 def fetch_unapplied_changes(conn, node_id, table_name=None, limit=100):
     with conn.cursor() as cur:
-        sql = """
-        SELECT * FROM change_log
-        WHERE JSON_CONTAINS(applied_nodes, %s) = 0
-        """
-        args = [json.dumps(f'"{node_id}"')]
-
         if table_name:
-            sql += " AND table_name = %s"
-            args.append(table_name)
+            sql = """
+                SELECT * FROM change_log
+                WHERE table_name = %s
+                  AND FIND_IN_SET(%s, applied_nodes) = 0
+                ORDER BY change_time ASC
+                LIMIT %s
+            """
+            cur.execute(sql, (table_name, node_id, limit))
+        else:
+            sql = """
+                SELECT * FROM change_log
+                WHERE FIND_IN_SET(%s, applied_nodes) = 0
+                ORDER BY change_time ASC
+                LIMIT %s
+            """
+            cur.execute(sql, (node_id, limit))
 
-        sql += " ORDER BY created_at ASC LIMIT %s"
-        args.append(limit)
-
-        cur.execute(sql, args)
         return cur.fetchall()
 
 
@@ -50,9 +56,11 @@ def mark_change_as_applied(conn, change_id, node_id):
     with conn.cursor() as cur:
         cur.execute("""
             UPDATE change_log
-            SET applied_nodes = JSON_ARRAY_APPEND(applied_nodes, '$', %s)
+            SET applied_nodes = JSON_ARRAY_APPEND(COALESCE(applied_nodes, JSON_ARRAY()), '$', %s)
             WHERE id = %s
         """, (node_id, change_id))
+
+    conn.commit()
 
 
 def sync_changes(source_conn, target_conn, node_id, tables="all"):
@@ -68,6 +76,6 @@ def sync_changes(source_conn, target_conn, node_id, tables="all"):
             try:
                 apply_change(target_conn, change)
                 mark_change_as_applied(source_conn, change["id"], node_id)
-                print(f"✅ Synced {change['operation']} on {table} [id={change['id']}]")
+                logger.exception(f"✅ Synced {change['operation']} on {table} [id={change['id']}]")
             except Exception as e:
-                print(f"❌ Failed to apply change {change['id']}: {e}")
+                logger.exception(f"❌ Failed to apply change {change['id']}: {e}")

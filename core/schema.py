@@ -16,24 +16,82 @@ CREATE TABLE IF NOT EXISTS `{CHANGE_LOG_TABLE}` (
 );
 """
 
-def ensure_change_log_table(conn: Connection):
-    """Create change_log table and ensure required fields exist."""
+def ensure_change_log_table(conn, db_name, tables):
     with conn.cursor() as cur:
-        # Create table if it doesn't exist
-        cur.execute(CREATE_CHANGE_LOG_SQL)
-
-        # Check if `applied_nodes` column exists
-        cur.execute("""
-            SELECT COLUMN_NAME
-            FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_NAME = 'change_log' AND COLUMN_NAME = 'applied_nodes'
+        # Create the change_log table if it doesn't exist
+        cur.execute(f"""
+            CREATE TABLE IF NOT EXISTS `{db_name}`.`change_log` (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                table_name VARCHAR(255),
+                operation ENUM('INSERT', 'UPDATE', 'DELETE'),
+                row_id VARCHAR(255),
+                change_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                applied_nodes TEXT DEFAULT NULL
+            );
         """)
+
+        # Add missing columns if needed (backward-compatible upgrade)
+        cur.execute(f"SHOW COLUMNS FROM `{db_name}`.`change_log` LIKE 'applied_nodes';")
         if not cur.fetchone():
-            print("🔧 Adding missing `applied_nodes` column...")
-            cur.execute("""
-                ALTER TABLE change_log
-                ADD COLUMN applied_nodes JSON DEFAULT JSON_ARRAY()
+            cur.execute(f"""
+                ALTER TABLE `{db_name}`.`change_log`
+                ADD COLUMN applied_nodes TEXT DEFAULT NULL;
             """)
+
+        cur.execute(f"SHOW COLUMNS FROM `{db_name}`.`change_log` LIKE 'change_time';")
+        if not cur.fetchone():
+            cur.execute(f"""
+                ALTER TABLE `{db_name}`.`change_log`
+                ADD COLUMN change_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+            """)
+
+        for table in tables:
+            if not table or not isinstance(table, str):
+                print(f"⚠️ Skipping invalid table entry: {table}")
+                continue
+
+            try:
+                # Check for primary key
+                cur.execute(f"SHOW KEYS FROM `{db_name}`.`{table}` WHERE Key_name = 'PRIMARY'")
+                pk_result = cur.fetchone()
+                if not pk_result:
+                    print(f"⚠️ Skipping '{table}': no primary key found")
+                    continue
+
+                pk_column = pk_result['Column_name']
+
+                for op in ['INSERT', 'UPDATE', 'DELETE']:
+                    trigger_name = f"trg_{table}_{op.lower()}_log"
+                    cur.execute(f"DROP TRIGGER IF EXISTS `{trigger_name}`")
+
+                    if op == 'INSERT':
+                        cur.execute(f"""
+                            CREATE TRIGGER `{trigger_name}`
+                            AFTER INSERT ON `{db_name}`.`{table}`
+                            FOR EACH ROW
+                            INSERT INTO `{db_name}`.`change_log` (table_name, operation, row_id)
+                            VALUES (%s, 'INSERT', NEW.`{pk_column}`);
+                        """, (table,))
+                    elif op == 'UPDATE':
+                        cur.execute(f"""
+                            CREATE TRIGGER `{trigger_name}`
+                            AFTER UPDATE ON `{db_name}`.`{table}`
+                            FOR EACH ROW
+                            INSERT INTO `{db_name}`.`change_log` (table_name, operation, row_id)
+                            VALUES (%s, 'UPDATE', NEW.`{pk_column}`);
+                        """, (table,))
+                    elif op == 'DELETE':
+                        cur.execute(f"""
+                            CREATE TRIGGER `{trigger_name}`
+                            AFTER DELETE ON `{db_name}`.`{table}`
+                            FOR EACH ROW
+                            INSERT INTO `{db_name}`.`change_log` (table_name, operation, row_id)
+                            VALUES (%s, 'DELETE', OLD.`{pk_column}`);
+                        """, (table,))
+            except Exception as e:
+                print(f"❌ Error creating triggers for '{table}': {e}")
+
+        conn.commit()
 
 
 

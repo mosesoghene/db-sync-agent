@@ -2,41 +2,24 @@
   "node_id": "d010969db1e445fdb7e69abbec3d33fe",
   "sync_pairs": [
     {
-      "name": "sales-db",
+      "name": "IQSS SAMPLE SCHOOL",
       "local": {
         "host": "localhost",
         "port": 3306,
-        "user": "local_user",
-        "password": "secret",
-        "db": "sales_local"
+        "user": "moghene",
+        "password": "Passw0rd$",
+        "db": "iqss_sahub_fs"
       },
       "cloud": {
-        "host": "cloud.example.com",
-        "port": 3306,
-        "user": "cloud_user",
-        "password": "secret",
-        "db": "sales_cloud"
-      },
-      "tables": "all"
-    },
-    {
-      "name": "inventory-db",
-      "local": {
         "host": "localhost",
         "port": 3306,
-        "user": "local_user",
-        "password": "secret",
-        "db": "inventory_local"
-      },
-      "cloud": {
-        "host": "cloud.example.com",
-        "port": 3306,
-        "user": "cloud_user",
-        "password": "secret",
-        "db": "inventory_cloud"
+        "user": "jamal",
+        "password": "Passw0rd$",
+        "db": "iqss_sahub_fs_cloud"
       },
       "tables": "all"
     }
   ],
-  "sync_interval_minutes": 10
+  "sync_interval_minutes": 10,
+  "tables": []
 }
