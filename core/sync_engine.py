@@ -5,6 +5,14 @@ from datetime import datetime
 from core.schema import get_primary_key_column, get_table_list
 
 
+class DateTimeEncoder(json.JSONEncoder):
+    """Custom JSON encoder for datetime objects"""
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return super().default(obj)
+
+
 def generate_database_node_id(sync_pair_name, db_type):
     """Generate a unique node ID for each database in the sync pair"""
     base_string = f"{sync_pair_name}_{db_type}"
@@ -148,8 +156,8 @@ def log_conflict(conn, source_change, conflict_info, resolution):
                         source_change['row_pk'],
                         conflict_info['type'],
                         source_change.get('row_data'),
-                        json.dumps(conflict_info.get('target_record', {})),
-                        json.dumps(conflict_info),
+                        json.dumps(conflict_info.get('target_record', {}), cls=DateTimeEncoder),
+                        json.dumps(conflict_info, cls=DateTimeEncoder),
                         resolution
                     ))
 
@@ -306,7 +314,17 @@ def apply_change_with_conflict_detection(target_conn, change, resolution_strateg
             ON DUPLICATE KEY UPDATE {updates}
             """
 
-            cur.execute(sql, list(row_data.values()))
+            # Serialize any nested dictionaries or complex objects to JSON
+            values = []
+            for value in row_data.values():
+                if isinstance(value, (dict, list)):
+                    values.append(json.dumps(value, cls=DateTimeEncoder))
+                elif isinstance(value, datetime):
+                    values.append(value.isoformat())
+                else:
+                    values.append(value)
+
+            cur.execute(sql, values)
             action = "CONFLICT RESOLVED + APPLIED" if has_conflict else "APPLIED"
             print(f"    ✅ {op} {action} successfully")
 
@@ -430,3 +448,86 @@ def sync_changes_with_conflict_resolution(source_conn, target_conn, sync_pair_na
         print(f"❌ Sync error: {e}")
         import traceback
         traceback.print_exc()
+
+
+def sync_changes(source_conn, target_conn, table_name, batch_size=1000):
+    """Sync changes from source to target for a specific table"""
+    try:
+        pk_col = get_primary_key_column(source_conn, table_name)
+        if not pk_col:
+            raise ValueError(f"No primary key found for table {table_name}")
+
+        with source_conn.cursor() as source_cur, target_conn.cursor() as target_cur:
+            # Get pending changes from change_log
+            source_cur.execute("""
+                SELECT * FROM change_log 
+                WHERE table_name = %s 
+                AND status = 'pending'
+                ORDER BY created_at
+                LIMIT %s
+            """, (table_name, batch_size))
+
+            changes = source_cur.fetchall()
+
+            for change in changes:
+                change_id = change['id']
+                operation = change['operation']
+                row_data = json.loads(change['row_data'])
+                pk_value = row_data.get(pk_col)
+
+                if not pk_value:
+                    continue
+
+                # Check for conflicts
+                has_conflict, conflict_info = detect_conflict(change, target_conn, table_name, pk_col, pk_value)
+
+                if has_conflict:
+                    # Log conflict and skip this change
+                    log_conflict(source_conn, change, conflict_info, 'skipped')
+                    source_cur.execute(
+                        "UPDATE change_log SET status = 'conflict' WHERE id = %s",
+                        (change_id,)
+                    )
+                    continue
+
+                try:
+                    # Apply the change to target
+                    if operation == 'INSERT':
+                        cols = ', '.join(f'`{col}`' for col in row_data.keys())
+                        placeholders = ', '.join(['%s'] * len(row_data))
+                        sql = f"INSERT INTO `{table_name}` ({cols}) VALUES ({placeholders})"
+                        target_cur.execute(sql, list(row_data.values()))
+
+                    elif operation == 'UPDATE':
+                        set_clause = ', '.join(f'`{col}` = %s' for col in row_data.keys())
+                        sql = f"UPDATE `{table_name}` SET {set_clause} WHERE `{pk_col}` = %s"
+                        values = list(row_data.values()) + [pk_value]
+                        target_cur.execute(sql, values)
+
+                    elif operation == 'DELETE':
+                        sql = f"DELETE FROM `{table_name}` WHERE `{pk_col}` = %s"
+                        target_cur.execute(sql, [pk_value])
+
+                    # Mark change as processed
+                    source_cur.execute(
+                        "UPDATE change_log SET status = 'processed' WHERE id = %s",
+                        (change_id,)
+                    )
+
+                except Exception as e:
+                    # Mark change as failed
+                    source_cur.execute(
+                        "UPDATE change_log SET status = 'failed', error = %s WHERE id = %s",
+                        (str(e), change_id)
+                    )
+                    raise
+
+            source_conn.commit()
+            target_conn.commit()
+
+            return len(changes)
+
+    except Exception as e:
+        source_conn.rollback()
+        target_conn.rollback()
+        raise

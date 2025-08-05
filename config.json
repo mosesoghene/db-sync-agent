@@ -1,25 +1,36 @@
 {
-  "node_id": "d010969db1e445fdb7e69abbec3d33fe",
-  "sync_pairs": [
-    {
-      "name": "IQSS SAMPLE SCHOOL",
-      "local": {
-        "host": "localhost",
-        "port": 3306,
-        "user": "moghene",
-        "password": "Passw0rd$",
-        "db": "iqss_sahub_fs"
-      },
-      "cloud": {
-        "host": "localhost",
-        "port": 3306,
-        "user": "jamal",
-        "password": "Passw0rd$",
-        "db": "iqss_sahub_fs_cloud"
-      },
-      "tables": "all"
-    }
-  ],
-  "sync_interval_minutes": 10,
-  "tables": []
+    "advanced": {
+        "batch_size": 1000,
+        "log_level": "INFO",
+        "retry_attempts": 3
+    },
+    "node_id": "fe860d81-903b-478f-b026-f0bd3de82b11",
+    "sync": {
+        "enabled": true,
+        "interval": 3
+    },
+    "sync_pairs": [
+        {
+            "cloud": {
+                "db": "iqss_sahub_fs_cloud",
+                "host": "localhost",
+                "password": "Passw0rd$",
+                "port": 3306,
+                "user": "jamal"
+            },
+            "local": {
+                "db": "iqss_sahub_fs",
+                "host": "localhost",
+                "password": "Passw0rd$",
+                "port": 3306,
+                "user": "moghene"
+            },
+            "name": "default",
+            "tables": {},
+            "tables_config": {
+                "default_direction": "bidirectional",
+                "enabled_tables": []
+            }
+        }
+    ]
 }

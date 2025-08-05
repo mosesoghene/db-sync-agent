@@ -1,7 +1,7 @@
 from core.config import load_config
 from core.connector import connect_mysql
 from core.schema import ensure_change_log_table, setup_triggers
-from scheduler.jobs import start_sync_scheduler_with_conflict_resolution, show_conflict_strategies
+from core.scheduler.jobs import start_sync_scheduler_with_conflict_resolution, show_conflict_strategies
 import uuid
 
 

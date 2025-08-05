@@ -34,7 +34,8 @@ def run_one_time_sync(config, node_id):
     for pair in pairs:
         local_cfg = pair["local"]
         cloud_cfg = pair["cloud"]
-        tables_spec = pair.get("tables", "all")
+        sync_config = config.get('sync', {})
+        tables_config = sync_config.get('tables', {})
 
         local_conn = connect_mysql(local_cfg)
         cloud_conn = connect_mysql(cloud_cfg)
@@ -43,14 +44,34 @@ def run_one_time_sync(config, node_id):
         with local_conn.cursor() as cur:
             cur.execute("SHOW TABLES")
             all_tables = [list(row.values())[0] for row in cur.fetchall()]
-            tables = [t for t in all_tables if t != "change_log"] if tables_spec == "all" else tables_spec
+            available_tables = [t for t in all_tables if t != "change_log"]
 
-        ensure_change_log_table(local_conn, local_cfg["db"], tables)
-        ensure_change_log_table(cloud_conn, cloud_cfg["db"], tables)
+        # Get tables and their sync directions
+        sync_tables = {}
+        for table in available_tables:
+            table_config = tables_config.get(table, {})
+            if table_config:  # Only include tables that have sync configuration
+                direction = table_config.get('direction', 'bidirectional')
+                if direction != 'no_sync':  # Skip tables set to no_sync
+                    sync_tables[table] = direction
 
-        # Actual sync
-        sync_changes(local_conn, cloud_conn, node_id, tables)
-        sync_changes(cloud_conn, local_conn, node_id, tables)
+        if not sync_tables:
+            logger.info("No tables configured for synchronization")
+            continue
+
+        # Ensure change log tables exist for selected tables
+        ensure_change_log_table(local_conn, local_cfg["db"], list(sync_tables.keys()))
+        ensure_change_log_table(cloud_conn, cloud_cfg["db"], list(sync_tables.keys()))
+
+        # Sync based on direction
+        for table, direction in sync_tables.items():
+            if direction in ['bidirectional', 'cloud_to_local']:
+                # Sync changes from cloud to local
+                sync_changes(cloud_conn, local_conn, node_id, [table])
+
+            if direction in ['bidirectional', 'local_to_cloud']:
+                # Sync changes from local to cloud
+                sync_changes(local_conn, cloud_conn, node_id, [table])
 
         local_conn.close()
         cloud_conn.close()
